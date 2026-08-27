@@ -18,14 +18,14 @@ on:
 jobs:
   build:
     name: Build FFmpeg (${{ matrix.arch }})
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-14
     strategy:
       matrix:
         include:
           - arch: arm64
-            os: macos-14
+            extra_flags: ""
           - arch: x64
-            os: macos-13
+            extra_flags: "--arch=x86_64 --target-os=darwin --enable-cross-compile --extra-cflags=-arch x86_64 --extra-ldflags=-arch x86_64"
 
     steps:
       - name: Install build tools
@@ -57,7 +57,8 @@ jobs:
             --enable-demuxer=mov,mp3,wav,aiff,aac,ogg,flac,matroska,asf \
             --enable-decoder=aac,aac_latm,alac,mp3,mp3float,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,vorbis,opus,flac,wmav1,wmav2,wmapro \
             --enable-static \
-            --disable-shared
+            --disable-shared \
+            ${{ matrix.extra_flags }}
 
           make -j$(sysctl -n hw.ncpu)
           strip ffmpeg
@@ -65,6 +66,7 @@ jobs:
       - name: Verify Binary & Interlocks
         working-directory: ffmpeg-src
         run: |
+          file ./ffmpeg
           ./ffmpeg -version
           echo "Checking MOV demuxer..."
           ./ffmpeg -demuxers | grep -E "mov"
