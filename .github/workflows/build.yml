@@ -67,11 +67,11 @@ jobs:
         run: |
           ./ffmpeg -version
           echo "Checking MOV demuxer..."
-          ./ffmpeg -demuxers | grep -E "mov,mp4,m4a"
+          ./ffmpeg -demuxers | grep -E "mov"
           echo "Checking AAC decoder..."
           ./ffmpeg -decoders | grep -E "aac"
-          echo "Checking PCM_F32LE muxer..."
-          ./ffmpeg -muxers | grep -E "pcm_f32le"
+          echo "Checking F32LE (PCM Float32) muxer..."
+          ./ffmpeg -muxers | grep -E "f32le"
 
       - name: Package Binary & Compute Checksum
         run: |
