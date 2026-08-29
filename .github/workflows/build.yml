@@ -71,6 +71,7 @@ jobs:
             --disable-ffprobe
             --disable-network
             --disable-autodetect
+            --enable-zlib
             --enable-protocol=file,pipe
             --enable-indev=lavfi
             --enable-filter=scale,pad,setsar,fps,format,aresample,aformat,anull,anullsrc,color,testsrc
