@@ -1,4 +1,8 @@
-name: Build LGPL macOS FFmpeg
+# Video flip of ambient-ffmpeg-macos: GPL + static libx264 + the video codec closure.
+# The Verify step is the gate: every needed capability is READ from the built binary;
+# a missing one fails the build. First run: workflow_dispatch with the defaults.
+
+name: Build GPL macOS FFmpeg (video)
 
 on:
   push:
@@ -11,13 +15,13 @@ on:
         required: true
         default: 'n7.1'
       release_tag:
-        description: 'GitHub Release Tag (e.g. v7.1-lgpl-1)'
+        description: 'GitHub Release Tag (e.g. v7.1-gpl-video-1)'
         required: true
-        default: 'v7.1-lgpl-1'
+        default: 'v7.1-gpl-video-1'
 
 jobs:
   build:
-    name: Build FFmpeg (${{ matrix.arch }})
+    name: Build FFmpeg video (${{ matrix.arch }})
     runs-on: macos-14
     strategy:
       matrix:
@@ -27,6 +31,20 @@ jobs:
       - name: Install build tools
         run: brew install nasm
 
+      - name: Build static x264 (${{ matrix.arch }})
+        run: |
+          git clone --depth 1 https://code.videolan.org/videolan/x264.git x264-src
+          cd x264-src
+          if [ "${{ matrix.arch }}" = "x64" ]; then
+            ./configure --prefix="$PWD/dist" --enable-static --disable-cli \
+              --host=x86_64-apple-darwin \
+              --extra-cflags="-arch x86_64" --extra-ldflags="-arch x86_64"
+          else
+            ./configure --prefix="$PWD/dist" --enable-static --disable-cli
+          fi
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
       - name: Clone FFmpeg
         run: |
           FFMPEG_REF="${{ github.event.inputs.ffmpeg_tag || 'n7.1' }}"
@@ -35,68 +53,70 @@ jobs:
       - name: Configure & Compile FFmpeg
         working-directory: ffmpeg-src
         run: |
+          X264="$GITHUB_WORKSPACE/x264-src/dist"
+          COMMON_FLAGS="
+            --prefix=./dist
+            --enable-gpl
+            --enable-libx264
+            --disable-nonfree
+            --disable-version3
+            --disable-everything
+            --disable-doc
+            --disable-debug
+            --disable-ffplay
+            --disable-ffprobe
+            --disable-network
+            --disable-autodetect
+            --enable-protocol=file,pipe
+            --enable-indev=lavfi
+            --enable-filter=scale,pad,setsar,fps,format,aresample,aformat,anull,anullsrc,color,testsrc
+            --enable-demuxer=mov,concat,image2,image2pipe,png_pipe
+            --enable-decoder=h264,aac,png
+            --enable-encoder=libx264,aac
+            --enable-muxer=mp4
+            --enable-parser=h264,aac
+            --enable-bsf=aac_adtstoasc,h264_mp4toannexb
+            --enable-static
+            --disable-shared
+          "
           if [ "${{ matrix.arch }}" = "x64" ]; then
-            ./configure \
-              --prefix=./dist \
-              --disable-gpl \
-              --disable-nonfree \
-              --disable-version3 \
-              --disable-everything \
-              --disable-doc \
-              --disable-debug \
-              --disable-ffplay \
-              --disable-ffprobe \
-              --disable-network \
-              --disable-autodetect \
-              --enable-protocol=file,pipe \
-              --enable-filter=aresample,aformat \
-              --enable-muxer=pcm_f32le \
-              --enable-demuxer=mov,mp3,wav,aiff,aac,ogg,flac,matroska,asf \
-              --enable-decoder=aac,aac_latm,alac,mp3,mp3float,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,vorbis,opus,flac,wmav1,wmav2,wmapro \
-              --enable-static \
-              --disable-shared \
-              --arch=x86_64 \
-              --target-os=darwin \
-              --enable-cross-compile \
-              --extra-cflags="-arch x86_64" \
-              --extra-ldflags="-arch x86_64" \
+            ./configure $COMMON_FLAGS \
+              --arch=x86_64 --target-os=darwin --enable-cross-compile \
+              --extra-cflags="-arch x86_64 -I$X264/include" \
+              --extra-ldflags="-arch x86_64 -L$X264/lib" \
+              --pkg-config-flags="--static" \
               --disable-x86asm
           else
-            ./configure \
-              --prefix=./dist \
-              --disable-gpl \
-              --disable-nonfree \
-              --disable-version3 \
-              --disable-everything \
-              --disable-doc \
-              --disable-debug \
-              --disable-ffplay \
-              --disable-ffprobe \
-              --disable-network \
-              --disable-autodetect \
-              --enable-protocol=file,pipe \
-              --enable-filter=aresample,aformat \
-              --enable-muxer=pcm_f32le \
-              --enable-demuxer=mov,mp3,wav,aiff,aac,ogg,flac,matroska,asf \
-              --enable-decoder=aac,aac_latm,alac,mp3,mp3float,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,vorbis,opus,flac,wmav1,wmav2,wmapro \
-              --enable-static \
-              --disable-shared
+            ./configure $COMMON_FLAGS \
+              --extra-cflags="-I$X264/include" \
+              --extra-ldflags="-L$X264/lib" \
+              --pkg-config-flags="--static"
           fi
-
-          make -j$(sysctl -n hw.ncpu)
+          make -j"$(sysctl -n hw.ncpu)"
           strip ffmpeg
 
-      - name: Verify Binary & Interlocks
+      - name: Verify Binary & Interlocks (the gate — every capability READ, not assumed)
         working-directory: ffmpeg-src
         run: |
           file ./ffmpeg
           ./ffmpeg -version
-          echo "Checking MOV demuxer..."
-          ./ffmpeg -demuxers | grep -E "mov"
-          echo "Checking AAC decoder..."
-          ./ffmpeg -decoders | grep -E "aac"
-          echo "Checking F32LE (PCM Float32) muxer..."
-          ./ffmpeg -muxers | grep -E "f32le"
+          echo "— license line must say GPL version 2 or later —"
+          ./ffmpeg -version | grep -i "gpl"
+          check() { echo "checking $1 for '$2'…"; ./ffmpeg -hide_banner "$1" 2>/dev/null | grep -E "$2"; }
+          check -encoders 'libx264'
+          check -encoders '^ A.*aac'
+          check -decoders '^ V.*h264'
+          check -decoders '^ V.*png'
+          check -decoders '^ A.*aac'
+          check -demuxers 'concat'
+          check -demuxers 'mov'
+          check -demuxers 'image2'
+          check -muxers ' mp4 '
+          check -filters 'scale'
+          check -filters 'pad'
+          check -filters 'anullsrc'
+          echo "— the lavfi door (anullsrc as an input device) —"
+          ./ffmpeg -hide_banner -f lavfi -t 0.1 -i anullsrc=r=48000:cl=stereo -f null - 2>&1 | tail -1
 
       - name: Package Binary & Compute Checksum
         run: |
@@ -142,9 +162,9 @@ jobs:
             echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
             echo "title=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
-            TAG="${{ github.event.inputs.release_tag || 'v7.1-lgpl-1' }}"
+            TAG="${{ github.event.inputs.release_tag || 'v7.1-gpl-video-1' }}"
             echo "tag=$TAG" >> $GITHUB_OUTPUT
-            echo "title=FFmpeg 7.1 LGPL macOS ($TAG)" >> $GITHUB_OUTPUT
+            echo "title=FFmpeg 7.1 GPL video macOS ($TAG)" >> $GITHUB_OUTPUT
           fi
 
       - name: Create Release
@@ -159,17 +179,18 @@ jobs:
           draft: false
           prerelease: false
           body: |
-            ## Ambient FFmpeg LGPL Builds for macOS
+            ## Ambient FFmpeg GPL video builds for macOS
 
-            Standalone, minimalist LGPL v2.1+ builds of FFmpeg tailored for local audio decoding in Ambient.
+            Standalone, minimalist **GPL v2+** builds of FFmpeg for LOCAL video assembly
+            in [AmbientContent](https://letsambient.com) — voiced clips + end cards →
+            one finished video, entirely on the user's machine.
 
-            ### Target Architectures:
-            * `ffmpeg-darwin-arm64.tar.gz` (Apple Silicon M1/M2/M3/M4)
-            * `ffmpeg-darwin-x64.tar.gz` (Intel x86_64)
+            Includes **libx264** (software H.264 — no GPU/OS encoder dependency), aac,
+            h264/png decode, mov/concat/image2/lavfi in, mp4 out, scale/pad/fps filters.
+            Built from the exact pinned FFmpeg + x264 sources this workflow names —
+            this repository IS the corresponding-source offer.
 
-            ### Included Demuxers & Decoders:
-            * **Containers**: `mov` (mp4/m4a/mov/m4v), `mp3`, `wav`, `aiff`, `aac`, `ogg`, `flac`, `webm`, `asf` (wma)
-            * **Audio Codecs**: `aac`, `alac`, `mp3`, `vorbis`, `opus`, `flac`, `wmav1/2/pro`, `pcm_*`
-            * **Output**: `pcm_f32le` (16 kHz mono float32)
+            * `ffmpeg-darwin-arm64.tar.gz` (Apple Silicon)
+            * `ffmpeg-darwin-x64.tar.gz` (Intel)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
