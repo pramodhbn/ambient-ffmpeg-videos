@@ -1,4 +1,10 @@
 # Video flip of ambient-ffmpeg-macos: GPL + static libx264 + the video codec closure.
+# video-2 (04 Sep 2026): widened to everything AmbientContent's arg builders ask
+# for — hevc decode (iPhone footage), f32le/wav out (local transcription), mp3/wav
+# in (music beds), the audio-craft filters (loudnorm/amix/xfade/acrossfade/
+# sidechaincompress/afade/asplit/volume), overlay, poster frames (image2 +
+# mjpeg/png). Read from the app's source, gated below. NOT yet: libass (subtitle
+# burn) — needs freetype/fribidi/harfbuzz static builds; the next tag.
 # The Verify step is the gate: every needed capability is READ from the built binary;
 # a missing one fails the build. First run: workflow_dispatch with the defaults.
 
@@ -17,7 +23,7 @@ on:
       release_tag:
         description: 'GitHub Release Tag (e.g. v7.1-gpl-video-1)'
         required: true
-        default: 'v7.1-gpl-video-1'
+        default: 'v7.1-gpl-video-2'
 
 jobs:
   build:
@@ -74,13 +80,13 @@ jobs:
             --enable-zlib
             --enable-protocol=file,pipe
             --enable-indev=lavfi
-            --enable-filter=scale,pad,setsar,fps,format,aresample,aformat,anull,anullsrc,color,testsrc
-            --enable-demuxer=mov,concat,image2,image2pipe,png_pipe
-            --enable-decoder=h264,aac,png
-            --enable-encoder=libx264,aac
-            --enable-muxer=mp4
-            --enable-parser=h264,aac
-            --enable-bsf=aac_adtstoasc,h264_mp4toannexb
+            --enable-filter=scale,pad,setsar,fps,format,aresample,aformat,anull,anullsrc,color,testsrc,loudnorm,amix,xfade,acrossfade,sidechaincompress,afade,asplit,volume,overlay,atrim,trim,setpts,asetpts,apad,split,null,crop,fade,concat
+            --enable-demuxer=mov,concat,image2,image2pipe,png_pipe,mp3,wav,pcm_f32le
+            --enable-decoder=h264,hevc,aac,png,mjpeg,mp3float,pcm_s16le,pcm_s24le,pcm_f32le
+            --enable-encoder=libx264,aac,png,mjpeg,pcm_f32le,pcm_s16le
+            --enable-muxer=mp4,mov,image2,f32le,wav,null
+            --enable-parser=h264,hevc,aac,mpegaudio,png,mjpeg
+            --enable-bsf=aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb
             --enable-static
             --disable-shared
           "
@@ -120,8 +126,28 @@ jobs:
           check -filters 'scale'
           check -filters 'pad'
           check -filters 'anullsrc'
+          echo "— video-2 (040926): every capability AmbientContent's arg builders use, read from its source —"
+          check -decoders '^ V.*hevc'          # every iPhone clip: 'no decoder found for: hevc'
+          check -decoders '^ V.*mjpeg'
+          check -decoders '^ A.*mp3float'      # music beds
+          check -decoders '^ A.*pcm_s16le'
+          check -encoders '^ A.*pcm_f32le'     # Whisper audio extract: '-f f32le'
+          check -encoders '^ V.*mjpeg'         # poster frames (<video>.jpg, -frames:v 1)
+          check -encoders '^ V.*png'
+          check -muxers ' f32le '              # 'Requested output format f32le is not known'
+          check -muxers ' wav '
+          check -muxers ' image2 '
+          check -muxers ' null '
+          check -demuxers ' mp3 '
+          check -demuxers ' wav '
+          for f in loudnorm amix xfade acrossfade sidechaincompress afade asplit volume overlay concat; do
+            check -filters " $f "
+          done
           echo "— the lavfi door (anullsrc as an input device) —"
           ./ffmpeg -hide_banner -f lavfi -t 0.1 -i anullsrc=r=48000:cl=stereo -f null - 2>&1 | tail -1
+          echo "— the f32le door, driven (the exact shape ffmpegService.ts:250 sends) —"
+          ./ffmpeg -hide_banner -y -f lavfi -t 0.2 -i anullsrc=r=48000:cl=stereo -vn -ac 1 -ar 16000 -f f32le /tmp/probe.f32le
+          test "$(stat -f %z /tmp/probe.f32le)" -eq 12800   # 0.2 s × 16000 × 4 bytes
 
       - name: Package Binary & Compute Checksum
         run: |
@@ -167,7 +193,7 @@ jobs:
             echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
             echo "title=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
-            TAG="${{ github.event.inputs.release_tag || 'v7.1-gpl-video-1' }}"
+            TAG="${{ github.event.inputs.release_tag || 'v7.1-gpl-video-2' }}"
             echo "tag=$TAG" >> $GITHUB_OUTPUT
             echo "title=FFmpeg 7.1 GPL video macOS ($TAG)" >> $GITHUB_OUTPUT
           fi
@@ -191,7 +217,10 @@ jobs:
             one finished video, entirely on the user's machine.
 
             Includes **libx264** (software H.264 — no GPU/OS encoder dependency), aac,
-            h264/png decode, mov/concat/image2/lavfi in, mp4 out, scale/pad/fps filters.
+            h264/**hevc**/png/mjpeg decode, mov/concat/image2/mp3/wav/lavfi in,
+            mp4/mov/image2/**f32le**/wav out, and the filters AmbientContent's video
+            craft uses (scale/pad/fps · loudnorm · amix · xfade · acrossfade ·
+            sidechaincompress · afade · asplit · volume · overlay). No libass yet.
             Built from the exact pinned FFmpeg + x264 sources this workflow names —
             this repository IS the corresponding-source offer.
 
