@@ -84,7 +84,7 @@ jobs:
             --enable-demuxer=mov,concat,image2,image2pipe,png_pipe,mp3,wav,pcm_f32le
             --enable-decoder=h264,hevc,aac,png,mjpeg,mp3float,pcm_s16le,pcm_s24le,pcm_f32le
             --enable-encoder=libx264,aac,png,mjpeg,pcm_f32le,pcm_s16le
-            --enable-muxer=mp4,mov,image2,f32le,wav,null
+            --enable-muxer=mp4,mov,image2,pcm_f32le,wav,null
             --enable-parser=h264,hevc,aac,mpegaudio,png,mjpeg
             --enable-bsf=aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb
             --enable-static
