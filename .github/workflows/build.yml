@@ -82,7 +82,7 @@ jobs:
             --enable-indev=lavfi
             --enable-filter=scale,pad,setsar,fps,format,aresample,aformat,anull,anullsrc,color,testsrc,loudnorm,amix,xfade,acrossfade,sidechaincompress,afade,asplit,volume,overlay,atrim,trim,setpts,asetpts,apad,split,null,crop,fade,concat
             --enable-demuxer=mov,concat,image2,image2pipe,png_pipe,mp3,wav,pcm_f32le
-            --enable-decoder=h264,hevc,aac,png,mjpeg,mp3float,pcm_s16le,pcm_s24le,pcm_f32le
+            --enable-decoder=h264,hevc,aac,png,mjpeg,mp3float,pcm_u8,pcm_s16le,pcm_s24le,pcm_f32le
             --enable-encoder=libx264,aac,png,mjpeg,pcm_f32le,pcm_s16le
             --enable-muxer=mp4,mov,image2,pcm_f32le,wav,null
             --enable-parser=h264,hevc,aac,mpegaudio,png,mjpeg
@@ -143,8 +143,8 @@ jobs:
           for f in loudnorm amix xfade acrossfade sidechaincompress afade asplit volume overlay concat; do
             check -filters " $f "
           done
-          echo "— the lavfi door (anullsrc as an input device) —"
-          ./ffmpeg -hide_banner -f lavfi -t 0.1 -i anullsrc=r=48000:cl=stereo -f null - 2>&1 | tail -1
+          echo "— the lavfi door (anullsrc as an input device) — ASSERTED, not printed: run 33872795869 showed the v1 check could not fail —"
+          ./ffmpeg -hide_banner -f lavfi -t 0.1 -i anullsrc=r=48000:cl=stereo -f null -
           echo "— the f32le door, driven (the exact shape ffmpegService.ts:250 sends) —"
           ./ffmpeg -hide_banner -y -f lavfi -t 0.2 -i anullsrc=r=48000:cl=stereo -vn -ac 1 -ar 16000 -f f32le /tmp/probe.f32le
           test "$(stat -f %z /tmp/probe.f32le)" -eq 12800   # 0.2 s × 16000 × 4 bytes
