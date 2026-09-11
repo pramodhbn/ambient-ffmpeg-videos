@@ -1,6 +1,22 @@
 # Video flip of ambient-ffmpeg-macos: GPL + static libx264 + the video codec closure.
 # The Verify step is the gate: every needed capability is READ from the built binary;
 # a missing one fails the build. First run: workflow_dispatch with the defaults.
+#
+# HISTORY, recorded not hidden (11 Sep 2026, MAC-1e step 1):
+#   v7.1-gpl-video-1 (29 Aug) was built from commit 4a20ddb — the allowlist as it stood
+#   then (scale/pad/fps · h264/aac/png · mp4).
+#   v7.1-gpl-video-2 (04 Sep) shipped the WIDER closure AmbientContent's arg builders ask
+#   for (hevc/mjpeg/mp3/pcm decode · f32le/wav/image2 out · loudnorm/amix/xfade/… filters)
+#   — but its tag was placed on the SAME commit 4a20ddb, so the workflow that built it
+#   was never committed and the README's "this repository IS the corresponding-source
+#   offer" was false for the binary every Mac ran. This file recovers that allowlist from
+#   the shipped binaries' OWN configure lines (both arches downloaded, SHA-256 == the pins
+#   in AmbientContent's scripts/fetch-ffmpeg.cjs, the `configuration:` string read from
+#   the bytes; the two arches differ only by the cross-compile flags this file already
+#   branches on). The lists below reproduce those strings verbatim.
+#   The Verify step was also rewritten: the v1 gate PRINTED the anullsrc probe's failure
+#   and went green; every check here matches the NAME COLUMN of the listing (never a
+#   substring anywhere on the line) and every probe is asserted by exit code.
 
 name: Build GPL macOS FFmpeg (video)
 
@@ -15,9 +31,9 @@ on:
         required: true
         default: 'n7.1'
       release_tag:
-        description: 'GitHub Release Tag (e.g. v7.1-gpl-video-1)'
+        description: 'GitHub Release Tag (e.g. v7.1-gpl-video-3)'
         required: true
-        default: 'v7.1-gpl-video-1'
+        default: 'v7.1-gpl-video-3'
 
 jobs:
   build:
@@ -58,6 +74,12 @@ jobs:
           # invisible without this (first dispatch failed exactly here: "ERROR: x264
           # not found using pkg-config", 290826).
           export PKG_CONFIG_PATH="$X264/lib/pkgconfig:$PKG_CONFIG_PATH"
+          # THE CLOSURE — what AmbientContent's arg builders ask for (ffmpegService ·
+          # videoEditService · videoStitch · brandFrame · cardRenderer), as shipped in
+          # v7.1-gpl-video-2. Configure names, NOT listing names: the f32le muxer/demuxer
+          # is `pcm_f32le` here and lists as `f32le` (video-2 run 1 failed on exactly that).
+          # `--enable-zlib` is load-bearing: with --disable-autodetect, zlib is off and the
+          # png decoder that needs it is dropped SILENTLY (video-1 run 2).
           COMMON_FLAGS="
             --prefix=./dist
             --enable-gpl
@@ -74,13 +96,13 @@ jobs:
             --enable-zlib
             --enable-protocol=file,pipe
             --enable-indev=lavfi
-            --enable-filter=scale,pad,setsar,fps,format,aresample,aformat,anull,anullsrc,color,testsrc
-            --enable-demuxer=mov,concat,image2,image2pipe,png_pipe
-            --enable-decoder=h264,aac,png
-            --enable-encoder=libx264,aac
-            --enable-muxer=mp4
-            --enable-parser=h264,aac
-            --enable-bsf=aac_adtstoasc,h264_mp4toannexb
+            --enable-filter=scale,pad,setsar,fps,format,aresample,aformat,anull,anullsrc,color,testsrc,loudnorm,amix,xfade,acrossfade,sidechaincompress,afade,asplit,volume,overlay,atrim,trim,setpts,asetpts,apad,split,null,crop,fade,concat
+            --enable-demuxer=mov,concat,image2,image2pipe,png_pipe,mp3,wav,pcm_f32le
+            --enable-decoder=h264,hevc,aac,png,mjpeg,mp3float,pcm_u8,pcm_s16le,pcm_s24le,pcm_f32le
+            --enable-encoder=libx264,aac,png,mjpeg,pcm_f32le,pcm_s16le
+            --enable-muxer=mp4,mov,image2,pcm_f32le,wav,null
+            --enable-parser=h264,hevc,aac,mpegaudio,png,mjpeg
+            --enable-bsf=aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb
             --enable-static
             --disable-shared
           "
@@ -100,28 +122,70 @@ jobs:
           make -j"$(sysctl -n hw.ncpu)"
           strip ffmpeg
 
-      - name: Verify Binary & Interlocks (the gate — every capability READ, not assumed)
+      - name: Verify Binary & Interlocks (the gate — every capability READ from the name column, every probe ASSERTED)
         working-directory: ffmpeg-src
         run: |
+          set -euo pipefail
           file ./ffmpeg
           ./ffmpeg -version
-          echo "— license line must say GPL version 2 or later —"
+          echo "— license line must say GPL —"
           ./ffmpeg -version | grep -i "gpl"
-          check() { echo "checking $1 for '$2'…"; ./ffmpeg -hide_banner "$1" 2>/dev/null | grep -E "$2"; }
-          check -encoders 'libx264'
-          check -encoders '^ A.*aac'
-          check -decoders '^ V.*h264'
-          check -decoders '^ V.*png'
-          check -decoders '^ A.*aac'
-          check -demuxers 'concat'
-          check -demuxers 'mov'
-          check -demuxers 'image2'
-          check -muxers ' mp4 '
-          check -filters 'scale'
-          check -filters 'pad'
-          check -filters 'anullsrc'
-          echo "— the lavfi door (anullsrc as an input device) —"
-          ./ffmpeg -hide_banner -f lavfi -t 0.1 -i anullsrc=r=48000:cl=stereo -f null - 2>&1 | tail -1
+
+          # has <listing-flag> <name>: the name must be an EXACT entry in the listing's
+          # NAME column (codecs/filters/formats print flags in $1 and the name in $2; a
+          # format's name may itself be a comma list, e.g. "mov,mp4,m4a,3gp,3g2,mj2").
+          # A substring match anywhere on the line would let a description word ("null",
+          # "png") certify a capability that was never built — the video-1 run 2 shape.
+          has() {
+            if ./ffmpeg -hide_banner "$1" 2>/dev/null | awk 'NF>=2 {print $2}' | tr ',' '\n' | grep -qx -- "$2"; then
+              echo "ok      $1 $2"
+            else
+              echo "MISSING $1 $2"; return 1
+            fi
+          }
+          # bare listings: -bsfs and -protocols print one name per line, INDENTED under
+          # section headers ("Input:" / "Output:") — strip leading whitespace before the
+          # exact match. (Executed against a full Windows build before the first
+          # dispatch: without the strip, `file` and `pipe` read as MISSING.)
+          bare() {
+            if ./ffmpeg -hide_banner "$1" 2>/dev/null | sed 's/^[[:space:]]*//' | grep -qx -- "$2"; then
+              echo "ok      $1 $2"
+            else
+              echo "MISSING $1 $2"; return 1
+            fi
+          }
+
+          echo "— encoders —"
+          for x in libx264 aac png mjpeg pcm_f32le pcm_s16le; do has -encoders "$x"; done
+          echo "— decoders —"
+          for x in h264 hevc aac png mjpeg mp3float pcm_u8 pcm_s16le pcm_s24le pcm_f32le; do has -decoders "$x"; done
+          echo "— demuxers (listing names: pcm_f32le lists as f32le) —"
+          for x in mov concat image2 image2pipe png_pipe mp3 wav f32le; do has -demuxers "$x"; done
+          echo "— muxers (listing names: pcm_f32le lists as f32le) —"
+          for x in mp4 mov image2 f32le wav null; do has -muxers "$x"; done
+          echo "— filters —"
+          for x in scale pad setsar fps format aresample aformat anull anullsrc color testsrc loudnorm amix xfade acrossfade sidechaincompress afade asplit volume overlay atrim trim setpts asetpts apad split null crop fade concat; do has -filters "$x"; done
+          echo "— bitstream filters —"
+          for x in aac_adtstoasc h264_mp4toannexb hevc_mp4toannexb; do bare -bsfs "$x"; done
+          echo "— protocols —"
+          for x in file pipe; do bare -protocols "$x"; done
+
+          echo "— DRIVEN probes (asserted by exit code under set -e) —"
+          echo "  lavfi door: anullsrc as an input device → null muxer"
+          ./ffmpeg -hide_banner -loglevel error -f lavfi -t 0.1 -i anullsrc=r=48000:cl=stereo -f null -
+          echo "  the Whisper path: anullsrc → 16 kHz mono raw f32le on a pipe"
+          ./ffmpeg -hide_banner -loglevel error -f lavfi -t 0.1 -i anullsrc=r=16000:cl=mono -ac 1 -ar 16000 -f f32le - > /dev/null
+          echo "  the assembly path: testsrc + anullsrc → libx264/aac → mp4"
+          ./ffmpeg -hide_banner -loglevel error -y -f lavfi -i testsrc=d=0.5:s=64x64:r=10 -f lavfi -t 0.5 -i anullsrc=r=48000:cl=stereo -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest probe.mp4
+          test -s probe.mp4
+          echo "  the stitch path: two clips through the concat demuxer, then xfade + acrossfade"
+          cp probe.mp4 probe2.mp4
+          printf "file 'probe.mp4'\nfile 'probe2.mp4'\n" > list.txt
+          ./ffmpeg -hide_banner -loglevel error -y -f concat -safe 0 -i list.txt -c:v libx264 -pix_fmt yuv420p -c:a aac concat.mp4
+          test -s concat.mp4
+          ./ffmpeg -hide_banner -loglevel error -y -i probe.mp4 -i probe2.mp4 -filter_complex "[0:v][1:v]xfade=transition=fade:duration=0.2:offset=0.2[v];[0:a][1:a]acrossfade=d=0.2[a]" -map "[v]" -map "[a]" -c:v libx264 -pix_fmt yuv420p -c:a aac xfade.mp4
+          test -s xfade.mp4
+          echo "VERIFY: every capability present, every probe green"
 
       - name: Package Binary & Compute Checksum
         run: |
@@ -167,7 +231,7 @@ jobs:
             echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
             echo "title=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
-            TAG="${{ github.event.inputs.release_tag || 'v7.1-gpl-video-1' }}"
+            TAG="${{ github.event.inputs.release_tag || 'v7.1-gpl-video-3' }}"
             echo "tag=$TAG" >> $GITHUB_OUTPUT
             echo "title=FFmpeg 7.1 GPL video macOS ($TAG)" >> $GITHUB_OUTPUT
           fi
@@ -186,14 +250,18 @@ jobs:
           body: |
             ## Ambient FFmpeg GPL video builds for macOS
 
-            Standalone, minimalist **GPL v2+** builds of FFmpeg for LOCAL video assembly
+            Standalone, minimalist **GPL v2+** builds of FFmpeg for LOCAL video work
             in [AmbientContent](https://letsambient.com) — voiced clips + end cards →
-            one finished video, entirely on the user's machine.
+            one finished video, the user's own footage edited and branded, entirely
+            on the user's machine.
 
-            Includes **libx264** (software H.264 — no GPU/OS encoder dependency), aac,
-            h264/png decode, mov/concat/image2/lavfi in, mp4 out, scale/pad/fps filters.
-            Built from the exact pinned FFmpeg + x264 sources this workflow names —
-            this repository IS the corresponding-source offer.
+            Includes **libx264** (software H.264 — no GPU/OS encoder dependency); decode
+            h264/hevc/aac/png/mjpeg/mp3/pcm; encode libx264/aac/png/mjpeg/pcm; in
+            mov/concat/image2/mp3/wav/f32le/lavfi; out mp4/mov/image2/wav/f32le/null;
+            filters scale/pad/fps/loudnorm/amix/xfade/acrossfade/sidechaincompress/
+            overlay/trim/concat and the rest of the closure named in the workflow.
+            Built from the exact pinned FFmpeg + x264 sources this workflow names, BY
+            the workflow at this tag — this repository IS the corresponding-source offer.
 
             * `ffmpeg-darwin-arm64.tar.gz` (Apple Silicon)
             * `ffmpeg-darwin-x64.tar.gz` (Intel)
