@@ -318,8 +318,28 @@ jobs:
           echo "  the Whisper path: anullsrc → 16 kHz mono raw f32le (the exact shape ffmpegService sends); size ASSERTED"
           ./ffmpeg -hide_banner -loglevel error -y -f lavfi -t 0.2 -i anullsrc=r=48000:cl=stereo -vn -ac 1 -ar 16000 -f f32le probe.f32le
           test "$(wc -c < probe.f32le)" -eq 12800   # 0.2 s × 16000 Hz × 4 bytes — the video-2 branch's own assertion, kept
-          echo "  the assembly path: testsrc + anullsrc → libx264/aac → mp4"
-          ./ffmpeg -hide_banner -loglevel error -y -f lavfi -i testsrc=d=0.5:s=64x64:r=10 -f lavfi -t 0.5 -i anullsrc=r=48000:cl=stereo -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest probe.mp4
+          # The probes take their VIDEO from a PNG file, the way the app does (end cards and
+          # brand faces are PNGs; the app never feeds ffmpeg a lavfi video source, only
+          # anullsrc for silence). Run 34565849019 tried testsrc and learned that lavfi
+          # video arrives as wrapped_avframe, a decoder this closure does not carry — a
+          # probe must drive the door the app uses, not one only the probe uses.
+          echo "  a source frame, written by python3 (320x180 black PNG)"
+          command -v python3
+          python3 - <<'PY'
+          import struct, zlib
+          w, h = 320, 180
+          raw = b''.join(b'\x00' + b'\x00\x00\x00' * w for _ in range(h))
+          def chunk(t, d): return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+          png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(raw, 9)) + chunk(b'IEND', b'')
+          open('src.png', 'wb').write(png)
+          PY
+          test -s src.png
+          echo "  the png pipe door (missing from every video-2 binary): a single PNG must probe as png_pipe"
+          # (ffmpeg exits 1 here — no output was asked for — so under pipefail its status is
+          # masked deliberately; the grep is the assertion.)
+          ( ./ffmpeg -hide_banner -i src.png 2>&1 || true ) | grep -q "Input #0, png_pipe"
+          echo "  the assembly path: PNG (image2 + png decoder) + anullsrc → libx264/aac → mp4 — the end-card path"
+          ./ffmpeg -hide_banner -loglevel error -y -loop 1 -framerate 10 -t 0.5 -i src.png -f lavfi -t 0.5 -i anullsrc=r=48000:cl=stereo -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest probe.mp4
           test -s probe.mp4
           echo "  the stitch path: two clips through the concat demuxer, then xfade + acrossfade"
           cp probe.mp4 probe2.mp4
@@ -336,13 +356,15 @@ jobs:
           F="$(ls /System/Library/Fonts/Supplemental/Arial.ttf /System/Library/Fonts/Supplemental/Verdana.ttf /Library/Fonts/Arial.ttf 2>/dev/null | head -1 || true)"
           if [ -n "$F" ]; then cp "$F" fonts/; echo "  fontsdir font: $F"; else echo "  no TrueType found for fontsdir — the probe falls back to CoreText's system provider"; fi
           printf '[Script Info]\nScriptType: v4.00+\nPlayResX: 320\nPlayResY: 180\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,40,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,5,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,BURN\n' > probe.ass
-          ./ffmpeg -hide_banner -loglevel error -y -f lavfi -i color=c=black:s=320x180:d=1:r=1 -frames:v 1 plain.png
-          ./ffmpeg -hide_banner -loglevel error -y -f lavfi -i color=c=black:s=320x180:d=1:r=1 -vf "ass=probe.ass:fontsdir=fonts" -frames:v 1 burned.png
+          # Like against like: the plain frame is src.png passed THROUGH ffmpeg's png encoder,
+          # so the only difference between plain.png and burned.png is the burn itself.
+          ./ffmpeg -hide_banner -loglevel error -y -i src.png -frames:v 1 plain.png
+          ./ffmpeg -hide_banner -loglevel error -y -i src.png -vf "ass=probe.ass:fontsdir=fonts" -frames:v 1 burned.png
           test -s plain.png && test -s burned.png
           if cmp -s plain.png burned.png; then echo "  BURN HAD NO EFFECT: burned frame is byte-identical to the plain frame (libass found no glyphs?)"; exit 1; fi
           echo "  burn changed the frame: $(wc -c < plain.png) bytes plain vs $(wc -c < burned.png) bytes burned"
           echo "  the subtitles filter (ffmpeg's ass demuxer/decoder → libass) must also load the same file"
-          ./ffmpeg -hide_banner -loglevel error -y -f lavfi -i color=c=black:s=320x180:d=1:r=1 -vf "subtitles=probe.ass:fontsdir=fonts" -frames:v 1 burned2.png
+          ./ffmpeg -hide_banner -loglevel error -y -i src.png -vf "subtitles=probe.ass:fontsdir=fonts" -frames:v 1 burned2.png
           if cmp -s plain.png burned2.png; then echo "  subtitles= HAD NO EFFECT"; exit 1; fi
           echo "VERIFY: every capability present, every probe green"
 
