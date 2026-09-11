@@ -6,14 +6,18 @@
 #   v7.1-gpl-video-1 (29 Aug) was built from commit 4a20ddb — the allowlist as it stood
 #   then (scale/pad/fps · h264/aac/png · mp4).
 #   v7.1-gpl-video-2 (04 Sep) shipped the WIDER closure AmbientContent's arg builders ask
-#   for (hevc/mjpeg/mp3/pcm decode · f32le/wav/image2 out · loudnorm/amix/xfade/… filters)
-#   — but its tag was placed on the SAME commit 4a20ddb, so the workflow that built it
-#   was never committed and the README's "this repository IS the corresponding-source
-#   offer" was false for the binary every Mac ran. This file recovers that allowlist from
-#   the shipped binaries' OWN configure lines (both arches downloaded, SHA-256 == the pins
-#   in AmbientContent's scripts/fetch-ffmpeg.cjs, the `configuration:` string read from
-#   the bytes; the two arches differ only by the cross-compile flags this file already
-#   branches on). The lists below reproduce those strings verbatim.
+#   for (hevc/mjpeg/mp3/pcm decode · f32le/wav/image2 out · loudnorm/amix/xfade/… filters).
+#   Its workflow WAS committed — on branch `video-2` (a2c0455, three commits), which was
+#   never merged — and the release tag was placed on 4a20ddb (main) instead of on that
+#   branch's head. So the tag pointed at a workflow that did not build the binary, and the
+#   README's "this repository IS the corresponding-source offer" held only for a reader who
+#   knew to look at an unmerged branch. (Commit 419d797's message and the first version of
+#   this note said "never committed" — WRONG; the branch existed. Corrected here, and the
+#   branch is merged into main by the commit that carries this note.)
+#   The lists below were recovered INDEPENDENTLY from the shipped binaries' OWN configure
+#   lines (both arches downloaded, SHA-256 == the pins in AmbientContent's
+#   scripts/fetch-ffmpeg.cjs, the `configuration:` string read from the bytes), then
+#   diffed against the branch's file: IDENTICAL. Two readings, one list.
 #   The Verify step was also rewritten: the v1 gate PRINTED the anullsrc probe's failure
 #   and went green; every check here matches the NAME COLUMN of the listing (never a
 #   substring anywhere on the line) and every probe is asserted by exit code.
@@ -173,8 +177,9 @@ jobs:
           echo "— DRIVEN probes (asserted by exit code under set -e) —"
           echo "  lavfi door: anullsrc as an input device → null muxer"
           ./ffmpeg -hide_banner -loglevel error -f lavfi -t 0.1 -i anullsrc=r=48000:cl=stereo -f null -
-          echo "  the Whisper path: anullsrc → 16 kHz mono raw f32le on a pipe"
-          ./ffmpeg -hide_banner -loglevel error -f lavfi -t 0.1 -i anullsrc=r=16000:cl=mono -ac 1 -ar 16000 -f f32le - > /dev/null
+          echo "  the Whisper path: anullsrc → 16 kHz mono raw f32le (the exact shape ffmpegService sends); size ASSERTED"
+          ./ffmpeg -hide_banner -loglevel error -y -f lavfi -t 0.2 -i anullsrc=r=48000:cl=stereo -vn -ac 1 -ar 16000 -f f32le probe.f32le
+          test "$(wc -c < probe.f32le)" -eq 12800   # 0.2 s × 16000 Hz × 4 bytes — the video-2 branch's own assertion, kept
           echo "  the assembly path: testsrc + anullsrc → libx264/aac → mp4"
           ./ffmpeg -hide_banner -loglevel error -y -f lavfi -i testsrc=d=0.5:s=64x64:r=10 -f lavfi -t 0.5 -i anullsrc=r=48000:cl=stereo -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest probe.mp4
           test -s probe.mp4

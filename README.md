@@ -18,10 +18,12 @@ finished video, entirely on the user's machine.
   complete build scripts and GitHub Actions workflows, and every release names
   the exact FFmpeg and x264 sources it was built from. The repo IS the source
   offer the GPL requires — **and a release tag must sit on the commit whose
-  workflow built it.** (Recorded, not hidden: `v7.1-gpl-video-2` shipped a
-  wider closure than the workflow at its tag; the workflow was recovered from
-  the shipped binaries' own configure lines on 11 Sep 2026 and committed —
-  see the history note at the top of `.github/workflows/build.yml`.)
+  workflow built it.** (Recorded, not hidden: `v7.1-gpl-video-2` was built
+  from branch `video-2`, but its tag was placed on `main` at a commit whose
+  workflow built video-1. On 11 Sep 2026 the allowlist was recovered from the
+  shipped binaries' own configure lines, found identical to the branch's, and
+  the branch was merged — see the history note at the top of
+  `.github/workflows/build.yml`.)
 * **Lean payload**: `--disable-everything` plus only the closure
   AmbientContent's arg builders ask for — decode h264/hevc/aac/png/mjpeg/mp3/pcm,
   encode libx264/aac/png/mjpeg/pcm, in mov/concat/image2/mp3/wav/f32le/lavfi,
@@ -37,4 +39,4 @@ finished video, entirely on the user's machine.
   AmbientContent's Windows builds pin [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)
   GPL releases by immutable tag + cross-verified SHA-256.
 
-> **Meta** — v2 · Created: 27 Aug 2026 (initial) · Updated: Fri, 11 Sept, 2026, 10:27:07 IST *(v2: the source-offer sentence now says a tag must sit on the commit whose workflow built it, and the payload bullet names the real video-2 closure — recovered from the shipped binaries, MAC-1e step 1)*
+> **Meta** — v3 · Created: 27 Aug 2026 (initial) · Updated: Fri, 11 Sept, 2026, 10:35:19 IST *(v3: corrected — the video-2 workflow WAS committed, on branch `video-2`, never merged; the tag sat on the wrong commit. v2 had said "recovered and committed" as if no branch existed. Branch merged into main. v2: the source-offer sentence + the real closure, MAC-1e step 1)*
