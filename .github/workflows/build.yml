@@ -21,6 +21,16 @@
 #   The Verify step was also rewritten: the v1 gate PRINTED the anullsrc probe's failure
 #   and went green; every check here matches the NAME COLUMN of the listing (never a
 #   substring anywhere on the line) and every probe is asserted by exit code.
+#
+# MAC-1e step 2 (11 Sep 2026): libass joins the build so the Mac can BURN subtitles —
+#   v7.1-gpl-video-2 had no libass, the `ass` filter did not exist, and AmbientContent's
+#   "Burn Subtitles & Overlays" failed on every Mac with ffmpeg's parser error. The font
+#   stack is built STATIC for both arches (FreeType · FriBidi · HarfBuzz · libass), from
+#   pinned release tarballs; each tarball's SHA-256 is PRINTED by the build so the pins can
+#   be READ from the first green run's log and then committed (never typed from memory).
+#   A workflow_dispatch no longer publishes a release unless `publish` is true — a tag push
+#   is the release path, because a tag push is the only trigger that guarantees the tag
+#   sits on the commit whose workflow built the binary (the video-2 lesson).
 
 name: Build GPL macOS FFmpeg (video)
 
@@ -35,9 +45,21 @@ on:
         required: true
         default: 'n7.1'
       release_tag:
-        description: 'GitHub Release Tag (e.g. v7.1-gpl-video-3)'
+        description: 'GitHub Release Tag (used ONLY when publish=true)'
         required: true
         default: 'v7.1-gpl-video-3'
+      publish:
+        description: 'Publish a GitHub Release from this dispatch? (default false — exploratory builds never publish; release by pushing a tag)'
+        required: false
+        default: 'false'
+
+env:
+  # Pinned dependency releases (versions are the pin; SHA-256s are printed by the
+  # "Fetch font stack sources" step and committed to this file once READ from a run).
+  FREETYPE_VER: 2.13.3
+  FRIBIDI_VER: 1.0.16
+  HARFBUZZ_VER: 11.0.0
+  LIBASS_VER: 0.17.3
 
 jobs:
   build:
@@ -49,7 +71,7 @@ jobs:
 
     steps:
       - name: Install build tools
-        run: brew install nasm
+        run: brew install nasm meson ninja pkg-config
 
       - name: Build static x264 (${{ matrix.arch }})
         run: |
@@ -65,6 +87,87 @@ jobs:
           make -j"$(sysctl -n hw.ncpu)"
           make install
 
+      - name: Fetch font stack sources (pinned versions; SHA-256 PRINTED for the record)
+        run: |
+          set -euo pipefail
+          mkdir -p deps-src && cd deps-src
+          curl -sSL -o "freetype-$FREETYPE_VER.tar.xz" "https://download.savannah.gnu.org/releases/freetype/freetype-$FREETYPE_VER.tar.xz"
+          curl -sSL -o "fribidi-$FRIBIDI_VER.tar.xz"   "https://github.com/fribidi/fribidi/releases/download/v$FRIBIDI_VER/fribidi-$FRIBIDI_VER.tar.xz"
+          curl -sSL -o "harfbuzz-$HARFBUZZ_VER.tar.xz" "https://github.com/harfbuzz/harfbuzz/releases/download/$HARFBUZZ_VER/harfbuzz-$HARFBUZZ_VER.tar.xz"
+          curl -sSL -o "libass-$LIBASS_VER.tar.xz"     "https://github.com/libass/libass/releases/download/$LIBASS_VER/libass-$LIBASS_VER.tar.xz"
+          echo "— SHA-256 of every source tarball (read these into the pins after the first green run) —"
+          shasum -a 256 *.tar.xz
+          for f in *.tar.xz; do tar -xJf "$f"; done
+          ls -d */
+
+      - name: Build static font stack + libass (${{ matrix.arch }})
+        run: |
+          set -euo pipefail
+          DEPS="$GITHUB_WORKSPACE/deps-${{ matrix.arch }}"
+          mkdir -p "$DEPS"
+          export PKG_CONFIG_PATH="$DEPS/lib/pkgconfig"
+          NCPU="$(sysctl -n hw.ncpu)"
+          if [ "${{ matrix.arch }}" = "x64" ]; then
+            # Cross-compile for Intel on the arm64 runner: the arch rides on the compiler
+            # itself (the most reliable way through autotools), and --host names the target.
+            export CC="clang -arch x86_64" CXX="clang++ -arch x86_64"
+            HOST="--host=x86_64-apple-darwin"
+            # meson needs a cross file for HarfBuzz.
+            cat > "$GITHUB_WORKSPACE/x64.cross" <<'CROSS'
+          [binaries]
+          c = 'clang'
+          cpp = 'clang++'
+          ar = 'ar'
+          strip = 'strip'
+          pkg-config = 'pkg-config'
+
+          [built-in options]
+          c_args = ['-arch', 'x86_64']
+          cpp_args = ['-arch', 'x86_64']
+          c_link_args = ['-arch', 'x86_64']
+          cpp_link_args = ['-arch', 'x86_64']
+
+          [host_machine]
+          system = 'darwin'
+          cpu_family = 'x86_64'
+          cpu = 'x86_64'
+          endian = 'little'
+          CROSS
+            MESON_CROSS="--cross-file=$GITHUB_WORKSPACE/x64.cross"
+          else
+            HOST=""
+            MESON_CROSS=""
+          fi
+
+          echo "=== FreeType $FREETYPE_VER (static; no png/bzip2/brotli/harfbuzz — the glyph rasteriser only) ==="
+          cd "$GITHUB_WORKSPACE/deps-src/freetype-$FREETYPE_VER"
+          ./configure --prefix="$DEPS" --enable-static --disable-shared $HOST \
+            --with-zlib=yes --with-png=no --with-bzip2=no --with-brotli=no --with-harfbuzz=no
+          make -j"$NCPU" && make install
+
+          echo "=== FriBidi $FRIBIDI_VER (static; bidi for RTL scripts) ==="
+          cd "$GITHUB_WORKSPACE/deps-src/fribidi-$FRIBIDI_VER"
+          ./configure --prefix="$DEPS" --enable-static --disable-shared $HOST --disable-docs
+          make -j"$NCPU" && make install
+
+          echo "=== HarfBuzz $HARFBUZZ_VER (static, meson; shaping for Indic and every complex script) ==="
+          cd "$GITHUB_WORKSPACE/deps-src/harfbuzz-$HARFBUZZ_VER"
+          meson setup build --prefix="$DEPS" --libdir=lib --default-library=static --buildtype=release $MESON_CROSS \
+            -Dfreetype=enabled -Dglib=disabled -Dgobject=disabled -Dcairo=disabled -Dicu=disabled -Dchafa=disabled \
+            -Dcoretext=disabled -Dtests=disabled -Ddocs=disabled -Dutilities=disabled -Dintrospection=disabled -Dbenchmark=disabled
+          meson compile -C build
+          meson install -C build
+
+          echo "=== libass $LIBASS_VER (static; CoreText is the system font provider on darwin, no fontconfig) ==="
+          cd "$GITHUB_WORKSPACE/deps-src/libass-$LIBASS_VER"
+          ./configure --prefix="$DEPS" --enable-static --disable-shared $HOST \
+            --disable-fontconfig --enable-coretext --disable-asm
+          make -j"$NCPU" && make install
+
+          echo "=== what pkg-config will hand ffmpeg for libass (static) ==="
+          pkg-config --static --libs --cflags libass
+          ls "$DEPS/lib"
+
       - name: Clone FFmpeg
         run: |
           FFMPEG_REF="${{ github.event.inputs.ffmpeg_tag || 'n7.1' }}"
@@ -74,20 +177,25 @@ jobs:
         working-directory: ffmpeg-src
         run: |
           X264="$GITHUB_WORKSPACE/x264-src/dist"
-          # ffmpeg configure finds libx264 THROUGH pkg-config — the static build is
-          # invisible without this (first dispatch failed exactly here: "ERROR: x264
-          # not found using pkg-config", 290826).
-          export PKG_CONFIG_PATH="$X264/lib/pkgconfig:$PKG_CONFIG_PATH"
+          DEPS="$GITHUB_WORKSPACE/deps-${{ matrix.arch }}"
+          # ffmpeg configure finds libx264 (and libass) THROUGH pkg-config — the static
+          # builds are invisible without this (first dispatch failed exactly here: "ERROR:
+          # x264 not found using pkg-config", 290826).
+          export PKG_CONFIG_PATH="$X264/lib/pkgconfig:$DEPS/lib/pkgconfig:$PKG_CONFIG_PATH"
           # THE CLOSURE — what AmbientContent's arg builders ask for (ffmpegService ·
           # videoEditService · videoStitch · brandFrame · cardRenderer), as shipped in
-          # v7.1-gpl-video-2. Configure names, NOT listing names: the f32le muxer/demuxer
-          # is `pcm_f32le` here and lists as `f32le` (video-2 run 1 failed on exactly that).
-          # `--enable-zlib` is load-bearing: with --disable-autodetect, zlib is off and the
-          # png decoder that needs it is dropped SILENTLY (video-1 run 2).
+          # v7.1-gpl-video-2, plus (video-3) libass and the two subtitle filters, and the
+          # ass demuxer/decoder the `subtitles` filter reads through. Configure names, NOT
+          # listing names: the f32le muxer/demuxer is `pcm_f32le` here and lists as `f32le`
+          # (video-2 run 1 failed on exactly that). `--enable-zlib` is load-bearing: with
+          # --disable-autodetect, zlib is off and the png decoder that needs it is dropped
+          # SILENTLY (video-1 run 2). `--extra-libs=-lc++` is HarfBuzz's C++ runtime: ffmpeg
+          # links with clang, not clang++, so a static C++ library needs it named.
           COMMON_FLAGS="
             --prefix=./dist
             --enable-gpl
             --enable-libx264
+            --enable-libass
             --disable-nonfree
             --disable-version3
             --disable-everything
@@ -100,27 +208,28 @@ jobs:
             --enable-zlib
             --enable-protocol=file,pipe
             --enable-indev=lavfi
-            --enable-filter=scale,pad,setsar,fps,format,aresample,aformat,anull,anullsrc,color,testsrc,loudnorm,amix,xfade,acrossfade,sidechaincompress,afade,asplit,volume,overlay,atrim,trim,setpts,asetpts,apad,split,null,crop,fade,concat
-            --enable-demuxer=mov,concat,image2,image2pipe,png_pipe,mp3,wav,pcm_f32le
-            --enable-decoder=h264,hevc,aac,png,mjpeg,mp3float,pcm_u8,pcm_s16le,pcm_s24le,pcm_f32le
+            --enable-filter=scale,pad,setsar,fps,format,aresample,aformat,anull,anullsrc,color,testsrc,loudnorm,amix,xfade,acrossfade,sidechaincompress,afade,asplit,volume,overlay,atrim,trim,setpts,asetpts,apad,split,null,crop,fade,concat,ass,subtitles
+            --enable-demuxer=mov,concat,image2,image2pipe,png_pipe,mp3,wav,pcm_f32le,ass
+            --enable-decoder=h264,hevc,aac,png,mjpeg,mp3float,pcm_u8,pcm_s16le,pcm_s24le,pcm_f32le,ass
             --enable-encoder=libx264,aac,png,mjpeg,pcm_f32le,pcm_s16le
             --enable-muxer=mp4,mov,image2,pcm_f32le,wav,null
             --enable-parser=h264,hevc,aac,mpegaudio,png,mjpeg
             --enable-bsf=aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb
             --enable-static
             --disable-shared
+            --extra-libs=-lc++
           "
           if [ "${{ matrix.arch }}" = "x64" ]; then
             ./configure $COMMON_FLAGS \
               --arch=x86_64 --target-os=darwin --enable-cross-compile \
-              --extra-cflags="-arch x86_64 -I$X264/include" \
-              --extra-ldflags="-arch x86_64 -L$X264/lib" \
+              --extra-cflags="-arch x86_64 -I$X264/include -I$DEPS/include" \
+              --extra-ldflags="-arch x86_64 -L$X264/lib -L$DEPS/lib" \
               --pkg-config-flags="--static" \
               --disable-x86asm
           else
             ./configure $COMMON_FLAGS \
-              --extra-cflags="-I$X264/include" \
-              --extra-ldflags="-L$X264/lib" \
+              --extra-cflags="-I$X264/include -I$DEPS/include" \
+              --extra-ldflags="-L$X264/lib -L$DEPS/lib" \
               --pkg-config-flags="--static"
           fi
           make -j"$(sysctl -n hw.ncpu)"
@@ -134,6 +243,9 @@ jobs:
           ./ffmpeg -version
           echo "— license line must say GPL —"
           ./ffmpeg -version | grep -i "gpl"
+          echo "— the binary must be self-contained: no dylib outside the OS —"
+          otool -L ./ffmpeg
+          if otool -L ./ffmpeg | grep -vE '^\./ffmpeg:|/usr/lib/|/System/Library/'; then echo "NON-SYSTEM DYLIB LINKED"; exit 1; fi
 
           # has <listing-flag> <name>: the name must be an EXACT entry in the listing's
           # NAME column (codecs/filters/formats print flags in $1 and the name in $2; a
@@ -162,13 +274,13 @@ jobs:
           echo "— encoders —"
           for x in libx264 aac png mjpeg pcm_f32le pcm_s16le; do has -encoders "$x"; done
           echo "— decoders —"
-          for x in h264 hevc aac png mjpeg mp3float pcm_u8 pcm_s16le pcm_s24le pcm_f32le; do has -decoders "$x"; done
+          for x in h264 hevc aac png mjpeg mp3float pcm_u8 pcm_s16le pcm_s24le pcm_f32le ass; do has -decoders "$x"; done
           echo "— demuxers (listing names: pcm_f32le lists as f32le) —"
-          for x in mov concat image2 image2pipe png_pipe mp3 wav f32le; do has -demuxers "$x"; done
+          for x in mov concat image2 image2pipe png_pipe mp3 wav f32le ass; do has -demuxers "$x"; done
           echo "— muxers (listing names: pcm_f32le lists as f32le) —"
           for x in mp4 mov image2 f32le wav null; do has -muxers "$x"; done
           echo "— filters —"
-          for x in scale pad setsar fps format aresample aformat anull anullsrc color testsrc loudnorm amix xfade acrossfade sidechaincompress afade asplit volume overlay atrim trim setpts asetpts apad split null crop fade concat; do has -filters "$x"; done
+          for x in scale pad setsar fps format aresample aformat anull anullsrc color testsrc loudnorm amix xfade acrossfade sidechaincompress afade asplit volume overlay atrim trim setpts asetpts apad split null crop fade concat ass subtitles; do has -filters "$x"; done
           echo "— bitstream filters —"
           for x in aac_adtstoasc h264_mp4toannexb hevc_mp4toannexb; do bare -bsfs "$x"; done
           echo "— protocols —"
@@ -190,6 +302,22 @@ jobs:
           test -s concat.mp4
           ./ffmpeg -hide_banner -loglevel error -y -i probe.mp4 -i probe2.mp4 -filter_complex "[0:v][1:v]xfade=transition=fade:duration=0.2:offset=0.2[v];[0:a][1:a]acrossfade=d=0.2[a]" -map "[v]" -map "[a]" -c:v libx264 -pix_fmt yuv420p -c:a aac xfade.mp4
           test -s xfade.mp4
+
+          echo "  the SUBTITLE path (video-3): burn a one-line .ass onto a black frame; the EFFECT is asserted on pixels"
+          # A font in fontsdir, the way AmbientContent passes its bundled brand faces. Any
+          # TrueType on the runner will do for the probe; the app ships its own.
+          mkdir -p fonts
+          F="$(ls /System/Library/Fonts/Supplemental/Arial.ttf /System/Library/Fonts/Supplemental/Verdana.ttf /Library/Fonts/Arial.ttf 2>/dev/null | head -1 || true)"
+          if [ -n "$F" ]; then cp "$F" fonts/; echo "  fontsdir font: $F"; else echo "  no TrueType found for fontsdir — the probe falls back to CoreText's system provider"; fi
+          printf '[Script Info]\nScriptType: v4.00+\nPlayResX: 320\nPlayResY: 180\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,40,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,5,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,BURN\n' > probe.ass
+          ./ffmpeg -hide_banner -loglevel error -y -f lavfi -i color=c=black:s=320x180:d=1:r=1 -frames:v 1 plain.png
+          ./ffmpeg -hide_banner -loglevel error -y -f lavfi -i color=c=black:s=320x180:d=1:r=1 -vf "ass=probe.ass:fontsdir=fonts" -frames:v 1 burned.png
+          test -s plain.png && test -s burned.png
+          if cmp -s plain.png burned.png; then echo "  BURN HAD NO EFFECT: burned frame is byte-identical to the plain frame (libass found no glyphs?)"; exit 1; fi
+          echo "  burn changed the frame: $(wc -c < plain.png) bytes plain vs $(wc -c < burned.png) bytes burned"
+          echo "  the subtitles filter (ffmpeg's ass demuxer/decoder → libass) must also load the same file"
+          ./ffmpeg -hide_banner -loglevel error -y -f lavfi -i color=c=black:s=320x180:d=1:r=1 -vf "subtitles=probe.ass:fontsdir=fonts" -frames:v 1 burned2.png
+          if cmp -s plain.png burned2.png; then echo "  subtitles= HAD NO EFFECT"; exit 1; fi
           echo "VERIFY: every capability present, every probe green"
 
       - name: Package Binary & Compute Checksum
@@ -213,7 +341,10 @@ jobs:
     name: Publish GitHub Release
     needs: [build]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    # A tag push publishes. A dispatch publishes ONLY when asked (publish=true) — so an
+    # exploratory build can never create a release by accident, and a release tag always
+    # sits on the commit whose workflow built it.
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
     permissions:
       contents: write
 
@@ -257,16 +388,20 @@ jobs:
 
             Standalone, minimalist **GPL v2+** builds of FFmpeg for LOCAL video work
             in [AmbientContent](https://letsambient.com) — voiced clips + end cards →
-            one finished video, the user's own footage edited and branded, entirely
-            on the user's machine.
+            one finished video, the user's own footage edited, subtitled and branded,
+            entirely on the user's machine.
 
-            Includes **libx264** (software H.264 — no GPU/OS encoder dependency); decode
-            h264/hevc/aac/png/mjpeg/mp3/pcm; encode libx264/aac/png/mjpeg/pcm; in
-            mov/concat/image2/mp3/wav/f32le/lavfi; out mp4/mov/image2/wav/f32le/null;
-            filters scale/pad/fps/loudnorm/amix/xfade/acrossfade/sidechaincompress/
-            overlay/trim/concat and the rest of the closure named in the workflow.
-            Built from the exact pinned FFmpeg + x264 sources this workflow names, BY
-            the workflow at this tag — this repository IS the corresponding-source offer.
+            Includes **libx264** (software H.264 — no GPU/OS encoder dependency) and
+            **libass** (subtitle burning, with FreeType · FriBidi · HarfBuzz built in,
+            so Indic and RTL scripts shape correctly); decode h264/hevc/aac/png/mjpeg/
+            mp3/pcm/ass; encode libx264/aac/png/mjpeg/pcm; in mov/concat/image2/mp3/
+            wav/f32le/ass/lavfi; out mp4/mov/image2/wav/f32le/null; filters scale/pad/
+            fps/loudnorm/amix/xfade/acrossfade/sidechaincompress/overlay/trim/concat/
+            ass/subtitles and the rest of the closure named in the workflow.
+            Built from the exact pinned FFmpeg + x264 + font-stack sources this workflow
+            names, BY the workflow at this tag — this repository IS the corresponding-
+            source offer. Licences carried: FFmpeg GPL v2+, x264 GPL v2+, libass ISC,
+            FreeType FTL, HarfBuzz MIT, FriBidi LGPL 2.1.
 
             * `ffmpeg-darwin-arm64.tar.gz` (Apple Silicon)
             * `ffmpeg-darwin-x64.tar.gz` (Intel)
