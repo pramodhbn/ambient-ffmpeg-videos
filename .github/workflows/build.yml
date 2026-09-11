@@ -74,6 +74,9 @@ jobs:
     name: Build FFmpeg video (${{ matrix.arch }})
     runs-on: macos-14
     strategy:
+      # Both arches REPORT: a failure on one must not cancel the other's Verify — run
+      # 34565460032 cancelled arm64 while x64 was the only one that had spoken.
+      fail-fast: false
       matrix:
         arch: [arm64, x64]
 
@@ -208,6 +211,12 @@ jobs:
           # --disable-autodetect, zlib is off and the png decoder that needs it is dropped
           # SILENTLY (video-1 run 2). `--extra-libs=-lc++` is HarfBuzz's C++ runtime: ffmpeg
           # links with clang, not clang++, so a static C++ library needs it named.
+          # The png pipe demuxer's configure name is `image_png_pipe` (from the symbol
+          # ff_image_png_pipe_demuxer in libavformat/allformats.c); it LISTS as `png_pipe`.
+          # configure silently ignores a component name it does not know, so video-2
+          # (`--enable-demuxer=…,png_pipe`) shipped WITHOUT it and nothing said so — the
+          # shipped video-2 binaries carry no "piped png sequence" string. Video-3 run 2's
+          # Verify (the first to check the name column for png_pipe) is what caught it.
           COMMON_FLAGS="
             --prefix=./dist
             --enable-gpl
@@ -226,7 +235,7 @@ jobs:
             --enable-protocol=file,pipe
             --enable-indev=lavfi
             --enable-filter=scale,pad,setsar,fps,format,aresample,aformat,anull,anullsrc,color,testsrc,loudnorm,amix,xfade,acrossfade,sidechaincompress,afade,asplit,volume,overlay,atrim,trim,setpts,asetpts,apad,split,null,crop,fade,concat,ass,subtitles
-            --enable-demuxer=mov,concat,image2,image2pipe,png_pipe,mp3,wav,pcm_f32le,ass
+            --enable-demuxer=mov,concat,image2,image2pipe,image_png_pipe,mp3,wav,pcm_f32le,ass
             --enable-decoder=h264,hevc,aac,png,mjpeg,mp3float,pcm_u8,pcm_s16le,pcm_s24le,pcm_f32le,ass
             --enable-encoder=libx264,aac,png,mjpeg,pcm_f32le,pcm_s16le
             --enable-muxer=mp4,mov,image2,pcm_f32le,wav,null
